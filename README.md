@@ -1,77 +1,65 @@
-# CuMesh: High-Performance Geometry Processing for PyTorch
+# CuMesh on AMD — the R1 hole-fill replacement (ROCm/HIP port)
 
-**CuMesh** is a GPU-accelerated library designed for high-performance 3D geometry processing directly within the PyTorch ecosystem. It provides efficient primitives for mesh cleaning, decimation, remeshing, and UV unwrapping.
+**This fork:** [JeffreyXiang/CuMesh](https://github.com/JeffreyXiang/CuMesh)
+is CUDA-only — its `fill_holes` does not run on AMD hardware. This fork
+carries **R1**, an independent HIP implementation of the same fill
+behavior, written from a source study of the original (behavior and
+math, not a translation of its code) and proven on an
+**RX 9070 XT (gfx1201) under ROCm 7.2**.
 
-Key features include:
-*   **CUDA-Accelerated Mesh Operations**: Fast topology queries, simplification, hole filling, and cleaning.
-*   **Remeshing**: Remesh arbitrary meshes using narrow-band UDF and Dual Contouring.
-*   **UV Unwrapping**: Efficient UV parameterization with `xatlas` enhenced by a fast mesh clustering on the GPU.
+The AMD work lives on this branch (`amd-port`). The default upstream
+code is untouched on the fork's upstream branch. Start with
+[`MANIFEST.md`](MANIFEST.md) for every changed file and its proof, or
+[`docs/AMD-PORT.md`](docs/AMD-PORT.md) for the full port write-up.
 
-## Installation
+## What works — proven, with the test scores
 
-### Prerequisites
-*   Python >= 3.8
-*   PyTorch >= 2.4 (with CUDA support)
-*   CUDA Toolkit >= 12.4 (matching your PyTorch version)
+| Check | Result |
+|---|---|
+| Calibration (25 real chunks) | **Zero failures** |
+| Corpus equivalence vs the incumbent (2,355 chunks through the real seam) | **2,352 strict-equal, 3 outcome-equal, 0 violations** |
+| Batch fill (job 046) | **386,195 chunks in 1,024.1 s = 377.1 chunks/s** |
+| Real end-to-end generations | Jobs 044, 046, 047, 049 — the fill held in all of them |
 
-### Build from Source
+The acceptance standard: the caller cannot tell the workers apart.
+Full method, corpus construction, and harness calibration (including a
+deliberately corrupt worker the harness catches) are in
+[`docs/proof-and-results.md`](docs/proof-and-results.md).
 
-```bash
-git clone https://github.com/JeffreyXiang/CuMesh.git --recursive
-pip install CuMesh --no-build-isolation
-```
+## What's not working
 
+- **The patched-CuMesh comparison wheel does not build** (found in
+  job 046, Phase K2: "patched CuMesh BUILD FAILED — install
+  untouched"). Open bug, recorded at wheel-build-error strength; no
+  deeper diagnosis yet. The unpatched installed baseline is unaffected
+  and the failure is non-cascade. Details:
+  [`docs/known-issues-and-planned-work.md`](docs/known-issues-and-planned-work.md)
 
-## Quick Start & Modules
+## What's left to do
 
-See the [examples](examples) directory for more detailed usage.
+- **Re-interface R1 to the upstream API** — R1 is proven at the worker
+  seam (chunk `.npz` in, filled `.npz` out). An in-tree backend behind
+  `CuMesh.fill_holes` is the owed packaging step; nothing here claims
+  it exists yet.
+- **Publish the equivalence corpus** — the 7,529 chunks (109.8 MB) that
+  make the equivalence claim checkable are referenced by hash in
+  `MANIFEST.md`, not yet carried in this repo.
+- **Pin the upstream base snapshot** for CuMesh (currently unpinned;
+  the studied incumbent is recorded in `MANIFEST.md`).
 
+The six failed build attempts that led to R1 — and the defect each one
+convicted — are kept in
+[`docs/failure-catalog.md`](docs/failure-catalog.md): the fingerprints
+are searchable on purpose.
 
-## API Reference
+## Building
 
-### `cumesh.CuMesh`
+Toolchain, exact build lines, and the load probe:
+[`docs/building-on-rocm.md`](docs/building-on-rocm.md). The batch
+worker design is in [`docs/batch-worker.md`](docs/batch-worker.md).
 
-*   **`init(vertices, faces)`**: Initialize mesh with `[V,3]` and `[F,3]` CUDA tensors.
-*   **`read()`**: Return current `(vertices, faces)` tensors.
-*   **`simplify(target_num_faces, verbose=False, options={})`**: Fast GPU-accelerated mesh decimation.
-*   **`uv_unwrap(verbose=False, ...)`**: Generate UVs using accelerated clustering and Xatlas.
-*   **`fill_holes(max_hole_perimeter)`**: Triangulate and close boundary loops.
-*   **`repair_non_manifold_edges()`**: Split edges to resolve non-manifold geometry.
-*   **`remove_degenerate_faces()`**: Remove zero-area faces or those with NaN normals.
-*   **`remove_duplicate_faces()`**: Remove faces with identical vertex indices.
-*   **`remove_small_connected_components(min_area)`**: Delete isolated components below area threshold.
-*   **`unify_face_orientations()`**: Reorient faces to have consistent winding order.
-*   **`compute_face_normals()`**, **`compute_vertex_normals()`**: Trigger normal calculation (access via `read_*_normals`).
-*   **`get_connected_components()`**: Compute connectivity (access via `read_connected_components`).
-*   **`get_boundary_loops()`**: Detect boundaries (access via `read_boundary_loops`).
-*   **Properties**: `num_vertices`, `num_faces`, `num_edges`, `num_boundaries`.
+## Credits and license
 
-### `cumesh.remeshing`
-*   `remesh_narrow_band_dc(...)`: Performs Dual Contouring reconstruction based on the UDF of the input mesh.
-
-### `cumesh.cuBVH`
-
-*NOTE: This is a wrapper around the [`cubvh`](https://github.com/ashawkey/cubvh) library.*
-
-### `cumesh.Atlas`
-
-*NOTE: This is a wrapper around the [`xatlas`](https://github.com/jpcy/xatlas) library.*
-
-*   **`add_mesh(vertices, faces, normals=None, uvs=None)`**: Register mesh geometry (Must be **CPU** tensors).
-*   **`compute_charts(max_chart_area, ...)`**: Segment mesh into UV charts (parameterization).
-*   **`pack_charts(resolution, padding, ...)`**: Pack generated charts into a texture atlas.
-*   **`get_mesh(index)`**: Retrieve processed data as `(vertex_map, faces, uvs)`.
-    *   `vertex_map`: Maps new vertex indices to original input indices.
-
-
-## Acknowledgements
-
-This package builds upon and integrates code from several excellent open-source libraries. We would like to express our gratitude to the authors of:
-
-*   **[cubvh](https://github.com/ashawkey/cubvh)**: For the high-performance CUDA BVH acceleration toolkit.
-*   **[xatlas](https://github.com/jpcy/xatlas)**: For the robust UV parameterization and atlas packing library.
-*   **[pamo](https://github.com/SarahWeiii/pamo)**: For the reference implementation of the GPU parallel edge collapse algorithm used in our mesh simplification module.
-
-## License
-
-[MIT License](LICENSE)
+Upstream: JeffreyXiang/CuMesh (MIT). This port's changes are MIT as
+well. Developed as part of porting TRELLIS.2 to AMD — see the companion
+fork, TRELLIS.2 `amd-port`, for the generation side.
